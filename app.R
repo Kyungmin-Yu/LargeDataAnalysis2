@@ -2,79 +2,88 @@ library(data.table)
 library(shiny)
 library(tidyverse)
 library(lubridate)
-# setwd("C:/Users/ykm25/Desktop/대용량자료관리및시각화/project/shiny/gu")
-traffic = fread('traffic.csv') 
-rain = fread('rain.csv') %>% mutate(date = ymd(date))
-accident = fread('accident.csv')
+
+# setwd("C:/Users/ykm25/Desktop/공모전/bigcontest2021/shiny")
+
+fw = fread('dong_fw.csv')
 
 ui = fluidPage(
-  titlePanel("자치구별 사고일의 변수 시각화하기"),
+  titlePanel("음식물 배출량 이상치 탐지"),
 
-  fluidPage(
-    helpText("서울시 자치구별 교통량, 강수량, 사고의 정보를 시각화"),
+  sidebarLayout(
+    sidebarPanel(
+    helpText("제주시 행정동별 음식물 배출량의 이상치 탐지"),
 
-    selectInput("gu",
-                label = "자치구를 선택하세요",
-                choices = traffic$시군구명 %>% unique(),
-                selected = "종로구"),
+    selectInput("dong",
+                label = "행정동을 선택하세요",
+                choices = fw$emd_nm %>% unique(),
+                selected = "건입동"),
 
-    selectInput("Date",
+   dateRangeInput("Date",
                 label = "날짜를 선택하세요",
-                choices = traffic$일자 %>% unique(),
-                selected = "2017-01-01")),
-  mainPanel(
-    fluidRow(
-      splitLayout(style = "border: 1px solid silver:", cellWidths = c(600,600,600),
-                  plotOutput("plotgraph1"),
-                  plotOutput("plotgraph2"),
-                  plotOutput("plotgraph3")
-      )
+                start = "2018-01-01",
+                end = "2021-06-30",
+                min = "2018-01-01",
+                max = "2021-06-30")
+   
+  ),
+  mainPanel(h1(textOutput("selected_dong")),
+            
+            plotOutput('plot1'),
+            
+            h3("<이상 탐지일> ",br(),br(), strong(textOutput("anom_date")))
   )
-))
+  
+  )
+  
+  
+  
+  )
 
 
-server = function(input, output){
+# Define server logic ----
+server <- function(input, output) {
   
+  output$selected_dong = renderText({
+    paste0(input$dong , "의 ", input$Date[1], " - ", input$Date[2], " 기간 이상치 탐지 결과" )
+  })
   
-  pt1 =reactive({
-    return( traffic %>% 
-    mutate(일자 = ymd(일자)) %>% 
-    left_join(rain, by=c('일자'='date', 'hour'='hour')) %>%
-    filter(일자 == input$Date & 시군구명 == input$gu) %>% 
-    ggplot()+
-    geom_line(aes(x=hour, y=교통량), color="red")+
-    theme(panel.background = element_rect(fill='white', color='black', linetype='solid'),
-          strip.background = element_rect(fill="white", color="black"),
-          plot.title = element_text(size=15))+
-    labs(x="시간", y="교통량", title = paste0(input$gu, "의 교통량")))})
+  res = reactive({
+    fw %>% 
+      as_tibble() %>% 
+      filter(emd_nm==input$dong & input$Date[1] <= base_date & base_date <= input$Date[2]) %>% 
+      select(-emd_nm)%>%
+      AnomalyDetectionTs(max_anoms=0.1, direction='neg', plot=TRUE)
+    
+  })
   
-  pt2 = reactive({ return( traffic %>% 
-    mutate(일자 = ymd(일자)) %>% 
-    left_join(rain, by=c('일자'='date', 'hour'='hour')) %>%
-    filter(일자 ==  input$Date) %>% 
-    ggplot()+
-    geom_line(aes(x=hour, y=강수량), color="blue")+
-    theme(panel.background = element_rect(fill='white', color='black', linetype='solid'),
-          strip.background = element_rect(fill="white", color="black"),
-          plot.title = element_text(size=15))+
-    labs(x="시간", y="강수량", title = paste0(input$gu, "의 강수량")))})
+  output$plot1 = renderPlot({
+    anoms <- res()$anoms
+    anoms <- data.frame(anoms)
+    
+    if(is.null(anoms$timestamp) == T) {
+    fw %>% 
+      as_tibble() %>% 
+      filter(emd_nm==input$dong & input$Date[1] <= base_date & base_date <= input$Date[2]) %>% 
+      ggplot(aes(x=base_date, y=em_g))+
+      geom_line(colour='RoyalBlue')
+      
+      } else{
+      anoms$timestamp <- as.POSIXct(anoms$timestamp)
+      fw %>% 
+      as_tibble() %>% 
+      filter(emd_nm==input$dong & input$Date[1] <= base_date & base_date <=   input$Date[2]) %>% 
+    ggplot(aes(x=base_date, y=em_g))+
+      geom_line(colour='RoyalBlue') +
+      geom_point(data=anoms, aes(x=timestamp, y=anoms), shape=21, size=3, colour="firebrick")}
+    
+  })
   
-  pt3 =reactive({return( accident %>%
-    filter(date == input$Date & 시군구명 == input$gu) %>% 
-    group_by(시군구, 법정동) %>% 
-    summarise(사고수 = n()) %>% 
-    ggplot()+
-    geom_bar(aes(x=법정동, y= 사고수, fill=시군구),stat = "identity")+
-    theme(panel.background = element_rect(fill='white', color='black', linetype='solid'),
-          axis.title.y=element_blank(),
-          strip.background = element_rect(fill="white", color="black"),
-          legend.position = "none",
-          axis.text.x = element_text(size=10, colour = "black"))+
-        labs(title = paste0(input$gu, "의 법정동별 사고건수")))})
+  output$anom_date = renderText({
+    if(is.null(res()$anoms$timestamp) == T) {" 없습니다."
+      }else{paste(res()$anoms$timestamp %>% as.character(), collapse=", ")}
+  })
   
-  output$plotgraph1 = renderPlot({pt1()})
-  output$plotgraph2 = renderPlot({pt2()})
-  output$plotgraph3 = renderPlot({pt3()})
 }
-
-shinyApp(ui, server)
+# Run the app ----
+shinyApp(ui = ui, server = server)
